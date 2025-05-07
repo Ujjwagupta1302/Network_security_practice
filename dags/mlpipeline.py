@@ -1,9 +1,13 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.operators.python import BranchPythonOperator
+from airflow.operators.empty import EmptyOperator
 from datetime import datetime
+import yaml
 import os
 import sys
 import mlflow
+from scipy.stats import ks_2samp
 import numpy as np
 import pandas as pd
 import pymongo
@@ -20,6 +24,7 @@ from urllib.parse import urlparse
 from sklearn.model_selection import GridSearchCV
 from network_security_practice.exception.exception import NetworkSecurityException
 from network_security_practice.logging.logger import logging
+import data_schema
 
 # Load environment variables
 load_dotenv()
@@ -50,6 +55,78 @@ class NetworkModel:
         except Exception as e:
             raise NetworkSecurityException(e, sys)
 
+def save_schema_yaml() :
+    schema_dict = {
+        "columns": [
+            "having_IP_Address",
+            "URL_Length",
+            "Shortining_Service",
+            "having_At_Symbol",
+            "double_slash_redirecting",
+            "Prefix_Suffix",
+            "having_Sub_Domain",
+            "SSLfinal_State",
+            "Domain_registeration_length",
+            "Favicon",
+            "port",
+            "HTTPS_token",
+            "Request_URL",
+            "URL_of_Anchor",
+            "Links_in_tags",
+            "SFH",
+            "Submitting_to_email",
+            "Abnormal_URL",
+            "Redirect",
+            "on_mouseover",
+            "RightClick",
+            "popUpWidnow",
+            "Iframe",
+            "age_of_domain",
+            "DNSRecord",
+            "web_traffic",
+            "Page_Rank",
+            "Google_Index",
+            "Links_pointing_to_page",
+            "Statistical_report",
+            "Result"
+        ],
+        "numerical_columns": [
+            "having_IP_Address",
+            "URL_Length",
+            "Shortining_Service",
+            "having_At_Symbol",
+            "double_slash_redirecting",
+            "Prefix_Suffix",
+            "having_Sub_Domain",
+            "SSLfinal_State",
+            "Domain_registeration_length",
+            "Favicon",
+            "port",
+            "HTTPS_token",
+            "Request_URL",
+            "URL_of_Anchor",
+            "Links_in_tags",
+            "SFH",
+            "Submitting_to_email",
+            "Abnormal_URL",
+            "Redirect",
+            "on_mouseover",
+            "RightClick",
+            "popUpWidnow",
+            "Iframe",
+            "age_of_domain",
+            "DNSRecord",
+            "web_traffic",
+            "Page_Rank",
+            "Google_Index",
+            "Links_pointing_to_page",
+            "Statistical_report",
+            "Result"
+        ]
+    }
+
+    with open("schema.yaml" , "w") as f :
+        yaml.dump(schema_dict,f) 
 
 def export_data_from_mongodb():
     MONGO_DB_URL = mongo_db_url
@@ -65,6 +142,55 @@ def export_data_from_mongodb():
     logging.info("Data exported from MongoDB to phisingData.csv")
 
 
+def validate_number_of_columns(dataframe:pd.DataFrame)->bool :
+    try:
+        with open("schema.yaml",'r') as f :
+            schema = yaml.safe_load(f) 
+
+        number_of_columns = sum(len(v) for v in schema.values() if isinstance(v, list))
+        logging.info(f"Required number of columns{number_of_columns}") 
+        if len(dataframe.columns)==number_of_columns :
+            return True 
+        return False 
+    except Exception as e:
+        NetworkSecurityException(e,sys) 
+
+def validate_numeric_columns(dataframe:pd.DataFrame)-> bool:
+    with open("schema.yaml",'r') as f :
+            schema = yaml.safe_load(f) 
+
+    schema_numeric_columns = len(schema["numerical_columns"])
+    numeric_columns = len(dataframe.select_dtypes(include=['number']).columns.tolist())
+
+    if schema_numeric_columns==numeric_columns :
+        return True 
+    return False
+
+def detect_dataset_drift(base_df,current_df,threshold=0.05)->bool:
+    try:
+        status=True
+        report={}
+        for column in base_df.columns:
+            d1=base_df[column]
+            d2=current_df[column]
+            is_same_dist=ks_2samp(d1,d2)
+            if threshold<=is_same_dist.pvalue:
+                is_found=False
+            else:
+                is_found=True
+                status=False
+            report.update({column:{
+                "p_value":float(is_same_dist.pvalue),
+                "drift_status":is_found
+                
+                }})
+        with open("report.yaml", "w") as f :
+            yaml.dump(report, f) 
+
+    except Exception as e:
+        raise NetworkSecurityException(e,sys)
+
+
 def split_data():
     dataframe = pd.read_csv('phisingData.csv')
     train_set, test_set = train_test_split(dataframe, test_size=0.2, random_state=42)
@@ -74,9 +200,21 @@ def split_data():
 
 
 def validate_data():
-    pd.read_csv('train.csv').to_csv('train_validated.csv', index=False)
-    pd.read_csv('test.csv').to_csv('test_validated.csv', index=False)
-    logging.info("Validation complete: train_validated.csv and test_validated.csv generated.")
+    train_dataframe = pd.read_csv('train.csv') 
+    test_dataframe = pd.read_csv('test.csv') 
+    status_1_train = validate_number_of_columns(train_dataframe)
+    status_1_test = validate_number_of_columns(test_dataframe) 
+    status_2_train = validate_numeric_columns(train_dataframe) 
+    status_2_test = validate_numeric_columns(test_dataframe) 
+    if status_1_test == False or status_1_train==False or status_2_train==False or status_2_test==False :
+        logging.error("Validation failed. Skipping subsequent tasks.")
+        return 'validation_failed'
+    else:
+        logging.info("Validation passed.")
+        train_dataframe.to_csv('train_validated.csv', index=False)
+        test_dataframe.to_csv('test_validated.csv', index=False)
+        logging.info("Validation complete: train_validated.csv and test_validated.csv generated.")
+        return 'continue_processing'
 
 
 def transform_data():
@@ -150,6 +288,8 @@ def train_model():
         mlflow.log_metric("precision", precision)
         mlflow.log_metric("recall_score", recall)
         mlflow.log_metric("r2_score", best_score)
+        mlflow.log_artifact("schema.yaml") 
+        mlflow.log_artifact("report.yaml")
 
         if urlparse(mlflow_uri).scheme != "file":
             mlflow.sklearn.log_model(best_model, "model", registered_model_name=best_model_name)
@@ -176,6 +316,10 @@ with DAG(
     schedule='@daily',
     catchup=False
 ) as dag:
+    schema_file = PythonOperator(
+        task_id = 'create_schema_yaml_file', 
+        python_callable = save_schema_yaml
+    )
     export_data = PythonOperator(
         task_id='export_data_from_mongodb',
         python_callable=export_data_from_mongodb
@@ -186,9 +330,10 @@ with DAG(
         python_callable=split_data
     )
 
-    validate_data_task = PythonOperator(
+    validate_data_task = BranchPythonOperator(
         task_id='validate_data',
         python_callable=validate_data
+        
     )
 
     transform_data_task = PythonOperator(
@@ -200,6 +345,9 @@ with DAG(
         task_id='train_model',
         python_callable=train_model
     )
+    validation_failed_task = EmptyOperator(
+        task_id = 'validation_failed'
+    )
 
     # Task chaining
-    export_data >> split_data_task >> validate_data_task >> transform_data_task >> train_model_task
+    schema_file >> export_data >> split_data_task >> validate_data_task >> [transform_data_task >> train_model_task,validation_failed_task]
