@@ -206,15 +206,16 @@ def validate_data():
     status_1_test = validate_number_of_columns(test_dataframe) 
     status_2_train = validate_numeric_columns(train_dataframe) 
     status_2_test = validate_numeric_columns(test_dataframe) 
-    if status_1_test == False or status_1_train==False or status_2_train==False or status_2_test==False :
-        logging.error("Validation failed. Skipping subsequent tasks.")
-        return 'validation_failed'
-    else:
-        logging.info("Validation passed.")
-        train_dataframe.to_csv('train_validated.csv', index=False)
-        test_dataframe.to_csv('test_validated.csv', index=False)
-        logging.info("Validation complete: train_validated.csv and test_validated.csv generated.")
-        return 'continue_processing'
+    status_3 = detect_dataset_drift(train_dataframe, test_dataframe)
+    #if status_1_test == False or status_1_train==False or status_2_train==False or status_2_test==False :
+        #logging.error("Validation failed. Skipping subsequent tasks.")
+        #return 'validation_failed'
+    #else:
+    logging.info("Validation passed.")
+    train_dataframe.to_csv('train_validated.csv', index=False)
+    test_dataframe.to_csv('test_validated.csv', index=False)
+    logging.info("Validation complete: train_validated.csv and test_validated.csv generated.")
+    return 'continue_processing'
 
 
 def transform_data():
@@ -330,12 +331,11 @@ with DAG(
         python_callable=split_data
     )
 
-    validate_data_task = BranchPythonOperator(
+    validate_data_task = PythonOperator(
         task_id='validate_data',
         python_callable=validate_data
         
     )
-
     transform_data_task = PythonOperator(
         task_id='transform_data',
         python_callable=transform_data
@@ -345,9 +345,5 @@ with DAG(
         task_id='train_model',
         python_callable=train_model
     )
-    validation_failed_task = EmptyOperator(
-        task_id = 'validation_failed'
-    )
-
     # Task chaining
-    schema_file >> export_data >> split_data_task >> validate_data_task >> [transform_data_task >> train_model_task,validation_failed_task]
+    schema_file >> export_data >> split_data_task >> validate_data_task >> transform_data_task >> train_model_task

@@ -49,7 +49,7 @@ def get_latest_model():
         # Transition the model to the Production stage if it's not already there
         model_uri = f"models:/Random Forest/{latest_version}"
         model = mlflow.pyfunc.load_model(model_uri)
-        return model
+        return model,latest_version
     except Exception as e:
         logging.error(f"Error loading model: {e}")
         return None
@@ -110,7 +110,7 @@ def prepare_features_array(feature_dict):
 # Prediction endpoint
 @app.get("/predict")
 async def predict(url: str = Query(..., description="Enter a full URL")):
-    model = get_latest_model()
+    model,latest_version = get_latest_model()
     if not model:
         return {"error": "Model could not be loaded from MLflow"}
 
@@ -118,7 +118,11 @@ async def predict(url: str = Query(..., description="Enter a full URL")):
         features = extract_features(url)
         feature_array = prepare_features_array(features)
         prediction = model.predict(feature_array)
-        return {"prediction": prediction.tolist()}
+        output = prediction.tolist() 
+        output.append(f"The latest version of the model used is {latest_version}")
+        #print(latest_version)
+        return {"prediction": output}
+        
     except Exception as e:
         logging.error(f"Prediction failed: {e}")
         return {"error": "Prediction process failed"}
